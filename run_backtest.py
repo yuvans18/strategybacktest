@@ -1,6 +1,7 @@
 import importlib
 import json
 import shutil
+from statistics import median
 import sys
 from pathlib import Path
 
@@ -12,6 +13,8 @@ DATA_MANAGER = DataManager("data")
 
 DEFAULT_SYMBOL = "NIFTY"
 DEFAULT_TIMEFRAME = "15m"
+RR_SCENARIOS = (1.0, 2.0, 3.0, 4.0)
+DEFAULT_RR = 2.0
 
 FRONTEND_DATA_FILE = Path("frontend/data.json")
 
@@ -20,6 +23,151 @@ def iso(value):
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return value
+
+
+def calculate_scenario_metrics(trades):
+    """Add R:R report fields without changing the shared backtest engine."""
+    metrics = calculate_metrics(trades)
+    points = [float(trade["Points"]) for trade in trades]
+    metrics.update({
+        "longTrades": sum(str(trade.get("Direction", "")).upper() == "LONG" for trade in trades),
+        "shortTrades": sum(str(trade.get("Direction", "")).upper() == "SHORT" for trade in trades),
+        "averageTrade": sum(points) / len(points) if points else 0,
+        "largestWin": max(points) if points else 0,
+        "largestLoss": min(points) if points else 0,
+    })
+    return metrics
+
+
+def filter_trades(trades, direction="ALL", trade_date=None):
+    return [
+        trade for trade in trades
+        if (direction == "ALL" or str(trade.get("Direction", "")).upper() == direction)
+        and (trade_date is None or str(trade["Trade Date"]) == trade_date)
+    ]
+
+
+def metric_summary(trades):
+    metrics = calculate_scenario_metrics(trades)
+    return {
+        key: metrics[key]
+        for key in (
+            "totalTrades", "longTrades", "shortTrades", "winningTrades",
+            "losingTrades", "winRate", "grossProfit", "grossLoss", "netPnl",
+            "profitFactor", "maxDrawdown", "averageTrade", "largestWin", "largestLoss",
+        )
+    }
+
+
+def exit_distribution(trades):
+    total = len(trades)
+    distribution = {
+        reason: {
+            "count": sum(trade.get("Exit Reason") == label for trade in trades),
+            "percentage": (sum(trade.get("Exit Reason") == label for trade in trades) / total * 100) if total else 0,
+        }
+        for reason, label in (("target", "Target"), ("stopLoss", "Stop Loss"), ("timeExit", "Time Exit"))
+    }
+    by_filter = {"ALL": distribution}
+    for reason, label in (("TARGET", "target"), ("STOP LOSS", "stopLoss"), ("TIME EXIT", "timeExit")):
+        count = distribution[label]["count"]
+        by_filter[reason] = {
+            key: {"count": value["count"] if key == label else 0,
+                  "percentage": 100 if key == label and count else 0}
+            for key, value in distribution.items()
+        }
+    return by_filter
+
+
+def date_consistency(trades):
+    daily_net = {}
+    for trade in trades:
+        date = str(trade["Trade Date"])
+        daily_net[date] = daily_net.get(date, 0) + float(trade["Points"])
+
+    values = list(daily_net.values())
+    profitable = sum(value > 0 for value in values)
+    losing = sum(value < 0 for value in values)
+    flat = sum(value == 0 for value in values)
+    profitable_pct = profitable / len(values) * 100 if values else 0
+    average_daily_net = sum(values) / len(values) if values else 0
+
+    # Simple, documented thresholds: >=60% profitable and positive average is
+    # Consistent; >=50% with positive average is Moderately consistent; a
+    # positive average below 50% is Concentrated; otherwise Inconsistent.
+    if average_daily_net > 0 and profitable_pct >= 60:
+        classification = "Consistent"
+    elif average_daily_net > 0 and profitable_pct >= 50:
+        classification = "Moderately consistent"
+    elif average_daily_net > 0:
+        classification = "Concentrated"
+    else:
+        classification = "Inconsistent"
+
+    best_date = max(daily_net, key=daily_net.get) if daily_net else None
+    worst_date = min(daily_net, key=daily_net.get) if daily_net else None
+    return {
+        "classification": classification,
+        "profitableDays": profitable,
+        "losingDays": losing,
+        "flatDays": flat,
+        "profitableDayPercentage": profitable_pct,
+        "averageDailyNet": average_daily_net,
+        "medianDailyNet": median(values) if values else 0,
+        "bestDay": {"date": best_date, "netPoints": daily_net[best_date]} if best_date else None,
+        "worstDay": {"date": worst_date, "netPoints": daily_net[worst_date]} if worst_date else None,
+    }
+
+
+def direction_edge(long_summary, short_summary):
+    """Rank with net points, profit factor, and win rate as equal evidence."""
+    criteria = ("netPnl", "profitFactor", "winRate")
+    long_score = sum(long_summary[key] > short_summary[key] for key in criteria)
+    short_score = sum(short_summary[key] > long_summary[key] for key in criteria)
+    stronger = "LONG" if long_score > short_score else "SHORT" if short_score > long_score else "EVEN"
+    return {
+        "long": long_summary,
+        "short": short_summary,
+        "strongerDirection": stronger,
+        "evidence": "Net points, profit factor, and win rate each contribute one comparison point.",
+    }
+
+
+def build_strategy_analysis(scenario_trades, trading_dates):
+    best_rr = {}
+    for direction in ("ALL", "LONG", "SHORT"):
+        candidates = []
+        for rr in RR_SCENARIOS:
+            summary = metric_summary(filter_trades(scenario_trades[rr], direction))
+            candidates.append((rr, summary))
+        rr, summary = max(
+            candidates,
+            key=lambda item: (item[1]["netPnl"], item[1]["profitFactor"], item[1]["winRate"]),
+        )
+        best_rr[direction.lower()] = {"rr": f"1:{int(rr)}", **summary}
+
+    scopes = {}
+    for rr in RR_SCENARIOS:
+        rr_key = f"1:{int(rr)}"
+        scopes[rr_key] = {}
+        for date in ["ALL", *trading_dates]:
+            date_value = None if date == "ALL" else date
+            directions = {}
+            for direction in ("ALL", "LONG", "SHORT"):
+                scoped_trades = filter_trades(scenario_trades[rr], direction, date_value)
+                directions[direction] = {
+                    "summary": metric_summary(scoped_trades),
+                    "exitDistribution": exit_distribution(scoped_trades),
+                    "dateConsistency": date_consistency(scoped_trades),
+                }
+            scopes[rr_key][date] = {
+                "directions": directions,
+                "directionEdge": direction_edge(
+                    directions["LONG"]["summary"], directions["SHORT"]["summary"]
+                ),
+            }
+
+    return {"bestRr": best_rr, "scopes": scopes}
 
 
 def build_trade_json(trade, trade_id):
@@ -88,7 +236,32 @@ def build_trade_json(trade, trade_id):
     }
 
 
-def build_frontend_data(df, trades, metrics, strategy, symbol, timeframe):
+def build_scenario_data(trades, metrics):
+    trade_json = [
+        build_trade_json(trade, trade_id)
+        for trade_id, trade in enumerate(trades, start=1)
+    ]
+
+    equity_curve = []
+    cumulative = 0.0
+    for trade_id, trade in enumerate(trades, start=1):
+        points = float(trade["Points"])
+        cumulative += points
+        equity_curve.append({
+            "time": iso(trade["Exit Time"]),
+            "tradeId": trade_id,
+            "pnl": points,
+            "cumulativePnl": cumulative,
+        })
+
+    return {
+        "trades": trade_json,
+        "metrics": metrics,
+        "equityCurve": equity_curve,
+    }
+
+
+def build_frontend_data(df, scenario_results, strategy_analysis, strategy, symbol, timeframe):
     candles = []
 
     for _, row in df.iterrows():
@@ -101,29 +274,13 @@ def build_frontend_data(df, trades, metrics, strategy, symbol, timeframe):
             "volume": None,
         })
 
-    trade_json = [
-        build_trade_json(trade, trade_id)
-        for trade_id, trade in enumerate(trades, start=1)
-    ]
-
-    equity_curve = []
-    cumulative = 0.0
-
-    for trade_id, trade in enumerate(trades, start=1):
-        points = float(trade["Points"])
-        cumulative += points
-        equity_curve.append({
-            "time": iso(trade["Exit Time"]),
-            "tradeId": trade_id,
-            "pnl": points,
-            "cumulativePnl": cumulative,
-        })
+    default_result = scenario_results[DEFAULT_RR]
 
     start_date = df.iloc[0]["time"]
     end_date = df.iloc[-1]["time"]
 
     parameters = {
-        "riskReward": getattr(strategy, "RR", 2.0),
+            "riskReward": DEFAULT_RR,
     }
 
     for attr, key in [
@@ -160,21 +317,17 @@ def build_frontend_data(df, trades, metrics, strategy, symbol, timeframe):
             "tradingDays": df["date"].nunique(),
         },
         "candles": candles,
-        "trades": trade_json,
-        "metrics": {
-            "totalTrades": metrics["totalTrades"],
-            "wins": metrics["winningTrades"],
-            "losses": metrics["losingTrades"],
-            "winningTrades": metrics["winningTrades"],
-            "losingTrades": metrics["losingTrades"],
-            "winRate": metrics["winRate"],
-            "grossProfit": metrics["grossProfit"],
-            "grossLoss": metrics["grossLoss"],
-            "netPnl": metrics["netPnl"],
-            "profitFactor": metrics["profitFactor"],
-            "maxDrawdown": metrics["maxDrawdown"],
+        # Keep the 1:2 result at the legacy top-level fields for existing
+        # consumers, while the dashboard uses all scenarios below.
+        "trades": default_result["trades"],
+        "metrics": default_result["metrics"],
+        "equityCurve": default_result["equityCurve"],
+        "defaultRr": "1:2",
+        "rrScenarios": {
+            f"1:{int(rr)}": scenario_results[rr]
+            for rr in RR_SCENARIOS
         },
-        "equityCurve": equity_curve,
+        "strategyAnalysis": strategy_analysis,
     }
 
 
@@ -204,7 +357,7 @@ def main():
     df = datasets[timeframe].copy()
     df["date"] = df["time"].dt.date
 
-    trades = []
+    signals = []
     trading_days = sorted(df["date"].unique())
 
     directional = getattr(strategy, "SUPPORTS_DIRECTIONS", False)
@@ -221,63 +374,67 @@ def main():
 
         previous_close = float(previous_day_df.iloc[-1]["close"])
 
-        if directional:
-            signal = strategy.check_signal(
-                day_df,
-                previous_close,
-                data_manager=DATA_MANAGER,
-                datasets=datasets,
-            )
-        else:
-            signal = strategy.check_signal(
-                day_df,
-                previous_close,
-                data_manager=DATA_MANAGER,
-                datasets=datasets,
-            )
+        signal = strategy.check_signal(
+            day_df,
+            previous_close,
+            data_manager=DATA_MANAGER,
+            datasets=datasets,
+        )
 
         if signal is None:
             continue
 
-        if directional:
-            trade = execute_trade(
-                day_df,
-                signal["signal_row"],
-                rr=strategy.RR,
-                direction=signal["direction"],
-                stop_loss=signal["stop_loss"],
-                time_exit_df=datasets.get("5m"),
-                time_exit_time=getattr(strategy, "TIME_EXIT_TIME", None),
+        signals.append({
+            "day_df": day_df,
+            "trade_date": current_date,
+            "previous_close": previous_close,
+            "signal": signal,
+        })
+
+    scenario_results = {}
+    scenario_trades = {}
+    for rr in RR_SCENARIOS:
+        trades = []
+        for setup in signals:
+            signal = setup["signal"]
+            if directional:
+                trade = execute_trade(
+                    setup["day_df"], signal["signal_row"], rr=rr,
+                    direction=signal["direction"], stop_loss=signal["stop_loss"],
+                    time_exit_df=datasets.get("5m"),
+                    time_exit_time=getattr(strategy, "TIME_EXIT_TIME", None),
+                )
+            else:
+                trade = execute_trade(setup["day_df"], signal["signal_row"], rr=rr)
+
+            if trade is None:
+                continue
+
+            trade["Trade Date"] = setup["trade_date"]
+            trade["Direction"] = trade.get("Direction", "Long")
+            trade["Gap %"] = signal.get("gap_pct", 0)
+            trade["PDC"] = setup["previous_close"]
+            trade["Today Open"] = float(setup["day_df"].iloc[0]["open"])
+            trade["First Candle Time"] = setup["day_df"].iloc[0]["time"]
+            trade["First Candle High"] = signal.get(
+                "first_candle_high", signal.get("cn_high", setup["day_df"].iloc[0]["high"])
             )
-        else:
-            trade = execute_trade(
-                day_df,
-                signal["signal_row"],
-                rr=strategy.RR,
-            )
+            trades.append(trade)
 
-        if trade is None:
-            continue
+        metrics = calculate_scenario_metrics(trades)
+        scenario_results[rr] = build_scenario_data(trades, metrics)
 
-        trade["Trade Date"] = current_date
-        trade["Direction"] = trade.get("Direction", "Long")
-        trade["Gap %"] = signal.get("gap_pct", 0)
-        trade["PDC"] = previous_close
-        trade["Today Open"] = float(day_df.iloc[0]["open"])
-        trade["First Candle Time"] = day_df.iloc[0]["time"]
-        trade["First Candle High"] = signal.get(
-            "first_candle_high",
-            signal.get("cn_high", day_df.iloc[0]["high"]),
-        )
+        scenario_trades[rr] = trades
 
-        trades.append(trade)
-
-    metrics = calculate_metrics(trades)
+    strategy_analysis = build_strategy_analysis(
+        scenario_trades,
+        [str(date) for date in trading_days],
+    )
 
     frontend_data = build_frontend_data(
         df,
-        trades,
-        metrics,
+        scenario_results,
+        strategy_analysis,
         strategy,
         symbol,
         timeframe,
@@ -300,15 +457,16 @@ def main():
     print(f"Symbol:        {symbol}")
     print(f"Timeframe:     {timeframe}")
     print(f"Total candles: {len(df)}")
-    print(f"Total trades:  {metrics['totalTrades']}")
-    print(f"Wins:          {metrics['winningTrades']}")
-    print(f"Losses:        {metrics['losingTrades']}")
-    print(f"Win rate:      {metrics['winRate']:.2f}%")
-    print(f"Gross profit:  {metrics['grossProfit']:.2f}")
-    print(f"Gross loss:    {metrics['grossLoss']:.2f}")
-    print(f"Net points:    {metrics['netPnl']:.2f}")
-    print(f"Profit factor: {metrics['profitFactor']:.4f}")
-    print(f"Max drawdown:  {metrics['maxDrawdown']:.2f}")
+    print(f"Signals:       {len(signals)}")
+    for rr in RR_SCENARIOS:
+        metrics = scenario_results[rr]["metrics"]
+        print(f"\nR:R 1:{int(rr)}")
+        print(f"Total trades:  {metrics['totalTrades']}")
+        print(f"LONG / SHORT:  {metrics['longTrades']} / {metrics['shortTrades']}")
+        print(f"Wins / Losses: {metrics['winningTrades']} / {metrics['losingTrades']}")
+        print(f"Win rate:      {metrics['winRate']:.2f}%")
+        print(f"Net points:    {metrics['netPnl']:.2f}")
+        print(f"Profit factor: {metrics['profitFactor']:.4f}")
     print()
     print("data.json created.")
     print("Dashboard data updated." if dashboard_updated else

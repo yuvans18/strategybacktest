@@ -151,6 +151,24 @@ button {
    Performance cards
    ============================================================ */
 
+.metrics-toolbar {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 2px 10px;
+  flex-wrap: wrap;
+}
+
+.metrics-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.metrics-context {
+  color: var(--text-low);
+  font: 12px var(--font-mono);
+}
+
 .cards {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -209,6 +227,61 @@ button {
 .win-num { color: var(--teal); }
 .loss-num { color: var(--red); }
 .split-sep { color: var(--text-low); font-size: 15px; }
+
+.analysis-section {
+  background: var(--bg-1);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  margin: 0 0 20px;
+  padding: 14px 16px 16px;
+}
+
+.analysis-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.analysis-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 11px 12px;
+  min-width: 0;
+}
+
+.analysis-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-mid);
+  font: 11.5px var(--font-mono);
+  line-height: 1.8;
+}
+
+.analysis-row strong, .analysis-edge {
+  color: var(--text-hi);
+  font-weight: 600;
+}
+
+.analysis-edge {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  margin-bottom: 5px;
+}
+
+.analysis-copy {
+  color: var(--text-mid);
+  font: 11.5px/1.5 var(--font-mono);
+}
 
 /* ============================================================
    Workspace: chart + detail panel
@@ -717,12 +790,14 @@ button {
 
 @media (max-width: 1200px) {
   .cards { grid-template-columns: repeat(3, 1fr); }
+  .analysis-grid { grid-template-columns: repeat(2, 1fr); }
   .workspace { grid-template-columns: 1fr; }
   .detail-panel { order: -1; }
 }
 
 @media (max-width: 720px) {
   .cards { grid-template-columns: repeat(2, 1fr); }
+  .analysis-grid { grid-template-columns: 1fr; }
   .run-meta { gap: 14px; }
   .chart-container { height: 420px; }
   .table-search { width: 140px; }

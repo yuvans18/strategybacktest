@@ -21,6 +21,8 @@
     selectedTradeId: null,
     directionFilter: "ALL",
     dateFilter: "ALL",
+    rrFilter: "1:2",
+    exitReasonFilter: "ALL",
     searchTerm: "",
     barIntervalSec: 900,     // inferred from candle spacing, default 15m
   };
@@ -55,6 +57,8 @@
 
     renderHeader(state.data.backtest, state.data.candles);
     populateDateFilter();
+    state.rrFilter = state.data.defaultRr || "1:2";
+    document.getElementById("rrFilter").value = state.rrFilter;
     renderCards(calculateMetrics(filteredDashboardTrades()));
     initChart(state.data.candles);
     refreshDashboard();
@@ -79,7 +83,21 @@ const ms = Date.parse(text.endsWith("Z") ? text : `${text}Z`);
 return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
 }
 
-function normalizeData(raw) {
+  function normalizeTrade(t) {
+    return {
+      ...t,
+      id: t.id ?? t.tradeId,
+      date: toUnixSeconds(t.date),
+      signalTime: toUnixSeconds(t.signalTime),
+      entryTime: toUnixSeconds(t.entryTime),
+      exitTime: toUnixSeconds(t.exitTime),
+      events: Array.isArray(t.events)
+        ? t.events.map((e) => ({ ...e, time: toUnixSeconds(e.time) }))
+        : []
+    };
+  }
+
+  function normalizeData(raw) {
   raw.backtest = raw.backtest || {};
   raw.candles = Array.isArray(raw.candles) ? raw.candles : [];
   raw.trades = Array.isArray(raw.trades) ? raw.trades : [];
@@ -98,19 +116,16 @@ function normalizeData(raw) {
       isNum(c.close)
     );
 
-  raw.trades = raw.trades.map((t) => ({
-    ...t,
-    date: toUnixSeconds(t.date),
-    signalTime: toUnixSeconds(t.signalTime),
-    entryTime: toUnixSeconds(t.entryTime),
-    exitTime: toUnixSeconds(t.exitTime),
-    events: Array.isArray(t.events)
-      ? t.events.map((e) => ({
-          ...e,
-          time: toUnixSeconds(e.time)
-        }))
-      : []
-  }));
+  raw.trades = raw.trades.map(normalizeTrade);
+
+  raw.rrScenarios = raw.rrScenarios || {
+    "1:2": { trades: raw.trades, metrics: raw.metrics, equityCurve: raw.equityCurve || [] }
+  };
+  Object.values(raw.rrScenarios).forEach((scenario) => {
+    scenario.trades = Array.isArray(scenario.trades) ? scenario.trades.map(normalizeTrade) : [];
+    scenario.metrics = scenario.metrics || {};
+  });
+  raw.defaultRr = raw.defaultRr || "1:2";
 
   if (raw.metrics.wins === undefined) {
     raw.metrics.wins = raw.metrics.winningTrades;
@@ -180,6 +195,11 @@ let to = backtest.endDate;
     setText("cardMaxDrawdown", isNum(m.maxDrawdown) ? formatNumber(m.maxDrawdown) : "—");
     setText("cardWins", isNum(m.wins) ? m.wins : "—");
     setText("cardLosses", isNum(m.losses) ? m.losses : "—");
+    setText("cardGrossProfit", isNum(m.grossProfit) ? formatSigned(m.grossProfit) : "—");
+    setText("cardGrossLoss", isNum(m.grossLoss) ? formatNumber(m.grossLoss) : "—");
+    setText("cardAverageTrade", isNum(m.averageTrade) ? formatSigned(m.averageTrade) : "—");
+    setText("cardLargestWin", isNum(m.largestWin) ? formatSigned(m.largestWin) : "—");
+    setText("cardLargestLoss", isNum(m.largestLoss) ? formatSigned(m.largestLoss) : "—");
   }
 
   // ---------------------------------------------------------------------
@@ -270,16 +290,32 @@ let to = backtest.endDate;
     return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
   }
 
+  function activeScenario() {
+    if (state.rrFilter === "ALL") {
+      return {
+        trades: Object.entries(state.data.rrScenarios).flatMap(([rr, scenario]) =>
+          scenario.trades.map((trade) => ({ ...trade, id: `${rr}-${trade.id}` }))
+        )
+      };
+    }
+    return state.data.rrScenarios[state.rrFilter] || state.data.rrScenarios[state.data.defaultRr];
+  }
+
   function filteredCandles() {
     if (state.dateFilter === "ALL") return state.data.candles;
     return state.data.candles.filter((c) => dateKey(c.time) === state.dateFilter);
   }
 
   function filteredDashboardTrades() {
-    return state.data.trades.filter((t) => {
+    return activeScenario().trades.filter((t) => {
       if (state.directionFilter !== "ALL" && t.direction !== state.directionFilter) return false;
-      return state.dateFilter === "ALL" || dateKey(t.date) === state.dateFilter;
+      if (state.dateFilter !== "ALL" && dateKey(t.date) !== state.dateFilter) return false;
+      return state.exitReasonFilter === "ALL" || normalizeExitReason(t.exitReason) === state.exitReasonFilter;
     });
+  }
+
+  function normalizeExitReason(reason) {
+    return String(reason || "").trim().toUpperCase().replace(/_/g, " ");
   }
 
   function currentFilteredTrades() {
@@ -329,6 +365,8 @@ let to = backtest.endDate;
       })));
     }
     renderCards(calculateMetrics(dashboardTrades));
+    setText("metricsContext", filterContextLabel());
+    renderStrategyAnalysis();
     refreshOverlays();
     refreshTable();
     state.chart.timeScale().fitContent();
@@ -357,13 +395,80 @@ let to = backtest.endDate;
       netPnl: pnls.reduce((sum, pnl) => sum + pnl, 0),
       profitFactor: grossLoss ? grossProfit / grossLoss : grossProfit ? Infinity : 0,
       maxDrawdown,
+      grossProfit,
+      grossLoss,
+      averageTrade: pnls.length ? pnls.reduce((sum, pnl) => sum + pnl, 0) / pnls.length : 0,
+      largestWin: pnls.length ? Math.max(...pnls) : 0,
+      largestLoss: pnls.length ? Math.min(...pnls) : 0,
     };
+  }
+
+  function filterContextLabel() {
+    const date = state.dateFilter === "ALL" ? "ALL DATES" : formatDate(toUnixSeconds(state.dateFilter));
+    const exitReason = state.exitReasonFilter === "ALL" ? "ALL EXIT REASONS" : state.exitReasonFilter;
+    return `R:R ${state.rrFilter} — ${state.directionFilter} — ${date} — ${exitReason}`;
+  }
+
+  function activeAnalysisScope() {
+    const rr = state.rrFilter === "ALL" ? state.data.defaultRr : state.rrFilter;
+    return state.data.strategyAnalysis?.scopes?.[rr]?.[state.dateFilter] || null;
+  }
+
+  function renderStrategyAnalysis() {
+    const analysis = state.data.strategyAnalysis;
+    const scope = activeAnalysisScope();
+    const rrLabel = state.rrFilter === "ALL" ? "ALL R:R (1:2 analysis)" : state.rrFilter;
+    const dateLabel = state.dateFilter === "ALL" ? "ALL DATES" : formatDate(toUnixSeconds(state.dateFilter));
+    setText("analysisScope", `R:R ${rrLabel} — ${state.directionFilter} — ${dateLabel}`);
+
+    if (!analysis || !scope) return;
+
+    const best = analysis.bestRr;
+    setText("analysisBestOverall", bestRrLabel(best.all));
+    setText("analysisBestLong", bestRrLabel(best.long));
+    setText("analysisBestShort", bestRrLabel(best.short));
+
+    const selectedSummary = scope.directions[state.directionFilter].summary;
+    const edge = scope.directionEdge;
+    const edgeLabel = edge.strongerDirection === "EVEN" ? "LONG / SHORT evenly matched" : `${edge.strongerDirection} stronger edge`;
+    setText("analysisDirectionEdge", edgeLabel);
+    setText(
+      "analysisDirectionMetrics",
+      `${state.directionFilter}: ${formatSigned(selectedSummary.netPnl)} · PF ${round2(selectedSummary.profitFactor)} · ${round1(selectedSummary.winRate)}% win | Long ${formatSigned(edge.long.netPnl)} / Short ${formatSigned(edge.short.netPnl)}`
+    );
+
+    const exits = scope.directions[state.directionFilter].exitDistribution[state.exitReasonFilter] ||
+      scope.directions[state.directionFilter].exitDistribution.ALL;
+    setText("analysisExitTarget", exitLabel(exits.target));
+    setText("analysisExitStopLoss", exitLabel(exits.stopLoss));
+    setText("analysisExitTime", exitLabel(exits.timeExit));
+
+    const consistency = scope.directions[state.directionFilter].dateConsistency;
+    setText("analysisConsistency", consistency.classification);
+    const bestDay = consistency.bestDay ? `${formatAnalysisDate(consistency.bestDay.date)} ${formatSigned(consistency.bestDay.netPoints)}` : "—";
+    const worstDay = consistency.worstDay ? `${formatAnalysisDate(consistency.worstDay.date)} ${formatSigned(consistency.worstDay.netPoints)}` : "—";
+    setText(
+      "analysisConsistencyMetrics",
+      `${round1(consistency.profitableDayPercentage)}% profitable days · Avg ${formatSigned(consistency.averageDailyNet)} | Best ${bestDay} | Worst ${worstDay}`
+    );
+  }
+
+  function bestRrLabel(summary) {
+    return `${summary.rr} · ${formatSigned(summary.netPnl)} · PF ${round2(summary.profitFactor)}`;
+  }
+
+  function exitLabel(summary) {
+    return `${summary.count} · ${round1(summary.percentage)}%`;
+  }
+
+  function formatAnalysisDate(date) {
+    return date ? formatDate(toUnixSeconds(date)) : "—";
   }
 
   function chartFilterLabel(tradeCount) {
     const direction = state.directionFilter === "ALL" ? "All" : state.directionFilter[0] + state.directionFilter.slice(1).toLowerCase();
     const date = state.dateFilter === "ALL" ? "all dates" : formatDate(toUnixSeconds(state.dateFilter));
-    return `${direction} trades · ${date} · ${tradeCount} plotted`;
+    return `${state.rrFilter} · ${direction} trades · ${date} · ${tradeCount} plotted`;
   }
 
   function populateDateFilter() {
@@ -508,7 +613,7 @@ let to = backtest.endDate;
   // Selection / detail panel / zoom
   // ---------------------------------------------------------------------
   function selectTrade(id) {
-    const trade = state.data.trades.find((t) => t.id === id);
+    const trade = activeScenario().trades.find((t) => t.id === id);
     if (!trade) return;
 
     state.selectedTradeId = id;
@@ -591,6 +696,18 @@ let to = backtest.endDate;
 
     document.getElementById("dateFilter").addEventListener("change", (e) => {
       state.dateFilter = e.target.value;
+      refreshDashboard();
+    });
+
+    document.getElementById("rrFilter").addEventListener("change", (e) => {
+      state.rrFilter = e.target.value;
+      state.selectedTradeId = null;
+      renderDetailPanel(null);
+      refreshDashboard();
+    });
+
+    document.getElementById("exitReasonFilter").addEventListener("change", (e) => {
+      state.exitReasonFilter = e.target.value;
       refreshDashboard();
     });
 

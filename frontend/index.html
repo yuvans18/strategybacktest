@@ -48,6 +48,10 @@
   </header>
 
   <!-- ============ PERFORMANCE CARDS ============ -->
+  <div class="metrics-toolbar">
+    <span class="metrics-title">Metrics</span>
+    <span class="metrics-context" id="metricsContext">R:R 1:2 — ALL — ALL DATES — ALL EXIT REASONS</span>
+  </div>
   <section class="cards" id="cardsRow" aria-label="Performance summary">
     <div class="card">
       <div class="card-label">Total Trades</div>
@@ -77,6 +81,57 @@
         <span class="split-sep">/</span>
         <span class="loss-num" id="cardLosses">—</span>
       </div>
+    </div>
+    <div class="card">
+      <div class="card-label">Gross Profit</div>
+      <div class="card-value" id="cardGrossProfit">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Gross Loss</div>
+      <div class="card-value" id="cardGrossLoss">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Average Trade</div>
+      <div class="card-value" id="cardAverageTrade">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Largest Win</div>
+      <div class="card-value" id="cardLargestWin">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Largest Loss</div>
+      <div class="card-value" id="cardLargestLoss">—</div>
+    </div>
+  </section>
+
+  <section class="analysis-section" aria-labelledby="analysisTitle">
+    <div class="analysis-header">
+      <span class="metrics-title" id="analysisTitle">Strategy Analysis</span>
+      <span class="metrics-context" id="analysisScope">R:R 1:2 — ALL — ALL DATES</span>
+    </div>
+    <div class="analysis-grid">
+      <article class="analysis-card">
+        <div class="card-label">Best R:R</div>
+        <div class="analysis-row"><span>Overall</span><strong id="analysisBestOverall">—</strong></div>
+        <div class="analysis-row"><span>Long</span><strong id="analysisBestLong">—</strong></div>
+        <div class="analysis-row"><span>Short</span><strong id="analysisBestShort">—</strong></div>
+      </article>
+      <article class="analysis-card">
+        <div class="card-label">Direction Edge</div>
+        <div class="analysis-edge" id="analysisDirectionEdge">—</div>
+        <div class="analysis-copy" id="analysisDirectionMetrics">—</div>
+      </article>
+      <article class="analysis-card">
+        <div class="card-label">Exit Distribution</div>
+        <div class="analysis-row"><span>Target</span><strong id="analysisExitTarget">—</strong></div>
+        <div class="analysis-row"><span>Stop loss</span><strong id="analysisExitStopLoss">—</strong></div>
+        <div class="analysis-row"><span>Time exit</span><strong id="analysisExitTime">—</strong></div>
+      </article>
+      <article class="analysis-card">
+        <div class="card-label">Date Consistency</div>
+        <div class="analysis-edge" id="analysisConsistency">—</div>
+        <div class="analysis-copy" id="analysisConsistencyMetrics">—</div>
+      </article>
     </div>
   </section>
 
@@ -180,6 +235,19 @@
         </div>
         <select id="dateFilter" class="date-filter" aria-label="Filter by date">
           <option value="ALL">All dates</option>
+        </select>
+        <select id="rrFilter" class="date-filter" aria-label="Filter by risk reward ratio">
+          <option value="ALL">All R:R</option>
+          <option value="1:1">1:1</option>
+          <option value="1:2" selected>1:2</option>
+          <option value="1:3">1:3</option>
+          <option value="1:4">1:4</option>
+        </select>
+        <select id="exitReasonFilter" class="date-filter" aria-label="Filter by exit reason">
+          <option value="ALL">All exit reasons</option>
+          <option value="TARGET">Target</option>
+          <option value="STOP LOSS">Stop loss</option>
+          <option value="TIME EXIT">Time exit</option>
         </select>
         <input type="search" id="tradeSearch" class="table-search" placeholder="Search trade id, reason…" />
       </div>
