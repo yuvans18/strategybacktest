@@ -207,13 +207,24 @@ def execute_trade(
                 exit_reason = "Stop Loss"
                 break
 
-        # If no target/stop occurred before 3:10, exit at the 5m
-        # candle OPEN stamped exactly 3:10 PM.
+               # ------------------------------------------------------------
+        # TIME EXIT
+        #
+        # 15:10 5m candle CLOSE confirms the time exit.
+        # Actual exit happens at the NEXT 5m candle OPEN (15:15).
+        # ------------------------------------------------------------
         if exit_price is None and exit_time_timestamp is not None:
-            time_row = time_rows.iloc[0]
-            exit_price = float(time_row["open"])
-            exit_time = time_row["time"]
-            exit_reason = "Time Exit"
+
+            next_time_rows = time_exit_df[
+                time_exit_df["time"] > exit_time_timestamp
+            ]
+
+            if not next_time_rows.empty:
+                next_time_row = next_time_rows.iloc[0]
+
+                exit_price = float(next_time_row["open"])
+                exit_time = next_time_row["time"]
+                exit_reason = "Time Exit"
 
     # ------------------------------------------------------------
     # Final fallback.

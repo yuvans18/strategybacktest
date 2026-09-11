@@ -13,7 +13,7 @@ DATA_MANAGER = DataManager("data")
 DEFAULT_SYMBOL = "NIFTY"
 DEFAULT_TIMEFRAME = "15m"
 
-FRONTEND_DATA_FILE = Path("/home/yuktrix/Music/frontend/data.json")
+FRONTEND_DATA_FILE = Path("frontend/data.json")
 
 
 def iso(value):
