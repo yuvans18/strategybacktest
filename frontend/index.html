@@ -22,13 +22,16 @@
 
     <div class="run-meta">
       <div class="meta-field">
-        <label>Symbol</label>
-        <div class="meta-value" id="metaSymbol">—</div>
+        <label>Strategy</label>
+        <select id="strategySelect" class="strategy-select" aria-label="Select Strategy">
+          <option value="1_pm_strategy">1:00 PM 15m CN Breakout</option>
+          <option value="gap_breakout">Gap Up + Range Breakout</option>
+        </select>
       </div>
       <div class="meta-divider"></div>
       <div class="meta-field">
-        <label>Strategy</label>
-        <div class="meta-value" id="metaStrategy">—</div>
+        <label>Symbol</label>
+        <div class="meta-value" id="metaSymbol">—</div>
       </div>
       <div class="meta-divider"></div>
       <div class="meta-field">
@@ -39,6 +42,11 @@
       <div class="meta-field">
         <label>Date Range</label>
         <div class="meta-value" id="metaDateRange">—</div>
+      </div>
+      <div class="meta-divider" id="lastRunDivider" hidden></div>
+      <div class="meta-field" id="lastRunField" hidden>
+        <label>Last Run</label>
+        <div class="meta-value" id="metaLastRun">—</div>
       </div>
     </div>
 
@@ -111,27 +119,85 @@
     </div>
     <div class="analysis-grid">
       <article class="analysis-card">
-        <div class="card-label">Best R:R</div>
-        <div class="analysis-row"><span>Overall</span><strong id="analysisBestOverall">—</strong></div>
-        <div class="analysis-row"><span>Long</span><strong id="analysisBestLong">—</strong></div>
-        <div class="analysis-row"><span>Short</span><strong id="analysisBestShort">—</strong></div>
-      </article>
-      <article class="analysis-card">
-        <div class="card-label">Direction Edge</div>
+        <div class="card-label">Best R:R &amp; Direction Edge</div>
         <div class="analysis-edge" id="analysisDirectionEdge">—</div>
         <div class="analysis-copy" id="analysisDirectionMetrics">—</div>
+        <div class="analysis-divider"></div>
+        <div class="analysis-row"><span>Best Overall</span><strong id="analysisBestOverall">—</strong></div>
+        <div class="analysis-row"><span>Best Long</span><strong id="analysisBestLong">—</strong></div>
+        <div class="analysis-row"><span>Best Short</span><strong id="analysisBestShort">—</strong></div>
       </article>
+
       <article class="analysis-card">
-        <div class="card-label">Exit Distribution</div>
-        <div class="analysis-row"><span>Target</span><strong id="analysisExitTarget">—</strong></div>
-        <div class="analysis-row"><span>Stop loss</span><strong id="analysisExitStopLoss">—</strong></div>
-        <div class="analysis-row"><span>Time exit</span><strong id="analysisExitTime">—</strong></div>
+        <div class="card-label">Streaks &amp; Exits</div>
+        <div class="analysis-row"><span>Max Win Streak</span><strong id="analysisMaxWinStreak" class="positive">—</strong></div>
+        <div class="analysis-row"><span>Max Loss Streak</span><strong id="analysisMaxLossStreak" class="negative">—</strong></div>
+        <div class="analysis-divider"></div>
+        <div class="analysis-row"><span>Target Exits</span><strong id="analysisExitTarget">—</strong></div>
+        <div class="analysis-row"><span>Stop Loss Exits</span><strong id="analysisExitStopLoss">—</strong></div>
+        <div class="analysis-row"><span>Time Exits</span><strong id="analysisExitTime">—</strong></div>
       </article>
+
       <article class="analysis-card">
-        <div class="card-label">Date Consistency</div>
+        <div class="card-label">Daily Performance</div>
         <div class="analysis-edge" id="analysisConsistency">—</div>
-        <div class="analysis-copy" id="analysisConsistencyMetrics">—</div>
+        <div class="analysis-row"><span>Best Day</span><strong id="analysisBestDay">—</strong></div>
+        <div class="analysis-row"><span>Worst Day</span><strong id="analysisWorstDay">—</strong></div>
+        <div class="analysis-row"><span>Profitable / Losing Days</span><strong id="analysisDayCounts">—</strong></div>
+        <div class="analysis-row"><span>Avg Daily Net</span><strong id="analysisAvgDailyNet">—</strong></div>
+        <div class="analysis-row"><span>Median Daily Net</span><strong id="analysisMedianDailyNet">—</strong></div>
       </article>
+
+      <article class="analysis-card">
+        <div class="card-label">Entry Time Windows (15m)</div>
+        <div class="analysis-row"><span>Best Window</span><strong id="analysisBestWindow">—</strong></div>
+        <div class="analysis-row"><span>Worst Window</span><strong id="analysisWorstWindow">—</strong></div>
+        <div class="analysis-copy" id="analysisWindowMetrics">Based on active 15m entry timestamps</div>
+      </article>
+    </div>
+
+    <!-- Sub-tables: Daily Performance & Entry Time Breakdown -->
+    <div class="analysis-tables-grid">
+      <div class="analysis-table-block">
+        <div class="subtable-title">Daily Performance Log</div>
+        <div class="subtable-scroll">
+          <table class="compact-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Trades</th>
+                <th>Wins</th>
+                <th>Losses</th>
+                <th class="col-pnl">Net Points</th>
+              </tr>
+            </thead>
+            <tbody id="dailyTableBody">
+              <!-- injected by app.js -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="analysis-table-block">
+        <div class="subtable-title">Entry Time Breakdown (15m)</div>
+        <div class="subtable-scroll">
+          <table class="compact-table">
+            <thead>
+              <tr>
+                <th>Time Window</th>
+                <th>Trades</th>
+                <th>Win Rate</th>
+                <th>Avg Trade</th>
+                <th>PF</th>
+                <th class="col-pnl">Net Points</th>
+              </tr>
+            </thead>
+            <tbody id="timeTableBody">
+              <!-- injected by app.js -->
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -233,9 +299,20 @@
           <button class="segmented-btn" data-filter="LONG">Long</button>
           <button class="segmented-btn" data-filter="SHORT">Short</button>
         </div>
-        <select id="dateFilter" class="date-filter" aria-label="Filter by date">
-          <option value="ALL">All dates</option>
-        </select>
+        <div class="filter-group">
+          <label class="filter-label">Entry Date</label>
+          <input type="date" id="fromDateFilter" class="date-filter" aria-label="From Date" placeholder="From Date" />
+          <span class="filter-sep">–</span>
+          <input type="date" id="toDateFilter" class="date-filter" aria-label="To Date" placeholder="To Date" />
+        </div>
+
+        <div class="filter-group">
+          <label class="filter-label">Entry Time</label>
+          <input type="time" id="entryFromTimeFilter" class="date-filter time-input" aria-label="Entry From Time" />
+          <span class="filter-sep">–</span>
+          <input type="time" id="entryToTimeFilter" class="date-filter time-input" aria-label="Entry To Time" />
+        </div>
+
         <select id="rrFilter" class="date-filter" aria-label="Filter by risk reward ratio">
           <option value="ALL">All R:R</option>
           <option value="1:1">1:1</option>
@@ -249,6 +326,7 @@
           <option value="STOP LOSS">Stop loss</option>
           <option value="TIME EXIT">Time exit</option>
         </select>
+        <button id="btnResetFilters" class="btn-ghost" title="Reset all filters">Clear filters</button>
         <input type="search" id="tradeSearch" class="table-search" placeholder="Search trade id, reason…" />
       </div>
     </div>

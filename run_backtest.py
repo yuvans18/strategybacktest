@@ -1,6 +1,7 @@
 import importlib
 import json
 import shutil
+from datetime import datetime
 from statistics import median
 import sys
 from pathlib import Path
@@ -291,6 +292,8 @@ def build_frontend_data(df, scenario_results, strategy_analysis, strategy, symbo
         if hasattr(strategy, attr):
             parameters[key] = getattr(strategy, attr).strftime("%H:%M")
 
+    now_iso = datetime.now().isoformat()
+
     return {
         "backtest": {
             "symbol": "NIFTY 50",
@@ -299,6 +302,7 @@ def build_frontend_data(df, scenario_results, strategy_analysis, strategy, symbo
             "strategy": strategy.STRATEGY_NAME,
             "startDate": iso(start_date),
             "endDate": iso(end_date),
+            "lastRun": now_iso,
             "dateRange": {
                 "from": iso(start_date),
                 "to": iso(end_date),
@@ -317,8 +321,6 @@ def build_frontend_data(df, scenario_results, strategy_analysis, strategy, symbo
             "tradingDays": df["date"].nunique(),
         },
         "candles": candles,
-        # Keep the 1:2 result at the legacy top-level fields for existing
-        # consumers, while the dashboard uses all scenarios below.
         "trades": default_result["trades"],
         "metrics": default_result["metrics"],
         "equityCurve": default_result["equityCurve"],
@@ -329,6 +331,61 @@ def build_frontend_data(df, scenario_results, strategy_analysis, strategy, symbo
         },
         "strategyAnalysis": strategy_analysis,
     }
+
+
+def generate_standalone_html(frontend_data, strategy_name, output_path):
+    frontend_dir = Path("frontend")
+    index_file = frontend_dir / "index.html"
+    style_file = frontend_dir / "style.css"
+    app_file = frontend_dir / "app.js"
+
+    if not (index_file.exists() and style_file.exists() and app_file.exists()):
+        return False
+
+    with open(index_file, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    with open(style_file, "r", encoding="utf-8") as f:
+        css = f.read()
+
+    with open(app_file, "r", encoding="utf-8") as f:
+        app_js = f.read()
+
+    html = html.replace(
+        '<link rel="stylesheet" href="style.css" />',
+        f'<style>\n{css}\n</style>'
+    )
+
+    # Scan results/ directory to embed all available strategies for offline switching
+    strategies_dict = {}
+    results_dir = Path("results")
+    if results_dir.exists():
+        for s_dir in results_dir.iterdir():
+            if s_dir.is_dir():
+                s_json = s_dir / "data.json"
+                if s_json.exists():
+                    try:
+                        with open(s_json, "r", encoding="utf-8") as f:
+                            strategies_dict[s_dir.name] = json.load(f)
+                    except Exception:
+                        pass
+    strategies_dict[strategy_name] = frontend_data
+
+    inline_script = (
+        f'<script>\n'
+        f'window.__BACKTEST_STRATEGIES__ = {json.dumps(strategies_dict)};\n'
+        f'window.__BACKTEST_DATA__ = {json.dumps(frontend_data)};\n'
+        f'window.__CURRENT_STRATEGY_ID__ = "{strategy_name}";\n'
+        f'</script>\n'
+        f'<script>\n{app_js}\n</script>'
+    )
+
+    html = html.replace('<script src="app.js"></script>', inline_script)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    return True
 
 
 def main():
@@ -449,6 +506,17 @@ def main():
     except (FileNotFoundError, PermissionError):
         dashboard_updated = False
 
+    # Save per-strategy result folder: results/<strategy_name>/
+    results_dir = Path("results") / strategy_name
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    strategy_data_path = results_dir / "data.json"
+    with open(strategy_data_path, "w", encoding="utf-8") as f:
+        json.dump(frontend_data, f, indent=2)
+
+    report_html_path = results_dir / "Backtest_Report.html"
+    html_generated = generate_standalone_html(frontend_data, strategy_name, report_html_path)
+
     print()
     print("=" * 50)
     print(strategy.STRATEGY_NAME)
@@ -471,6 +539,10 @@ def main():
     print("data.json created.")
     print("Dashboard data updated." if dashboard_updated else
           "Dashboard data copy skipped (frontend path unavailable).")
+    print(f"Per-strategy results saved to: {results_dir}/")
+    print(f"  - {strategy_data_path}")
+    if html_generated:
+        print(f"  - {report_html_path}")
     print("=" * 50)
 
 

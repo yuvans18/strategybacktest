@@ -20,7 +20,10 @@
     overlaySeries: [],       // dynamically created SL/target line series
     selectedTradeId: null,
     directionFilter: "ALL",
-    dateFilter: "ALL",
+    fromDate: "",
+    toDate: "",
+    entryFromTime: "",
+    entryToTime: "",
     rrFilter: "1:2",
     exitReasonFilter: "ALL",
     searchTerm: "",
@@ -42,26 +45,52 @@
 
   async function init() {
     bindStaticControls();
+    const initialStrategyId = window.__CURRENT_STRATEGY_ID__ || "1_pm_strategy";
+    await loadStrategy(initialStrategyId);
+    if (state.data?.candles) {
+      initChart(state.data.candles);
+      refreshDashboard();
+    }
+  }
 
-    let data;
-    try {
-      const res = await fetch("data.json");
-      data = await res.json();
-    } catch (err) {
-      renderFatalError(err);
-      return;
+  async function loadStrategy(strategyId) {
+    let data = null;
+
+    if (window.__BACKTEST_STRATEGIES__ && window.__BACKTEST_STRATEGIES__[strategyId]) {
+      data = window.__BACKTEST_STRATEGIES__[strategyId];
+    } else if (window.__BACKTEST_DATA__ && (window.__CURRENT_STRATEGY_ID__ === strategyId || !strategyId)) {
+      data = window.__BACKTEST_DATA__;
+    } else {
+      try {
+        const res = await fetch(`results/${strategyId}/data.json`);
+        data = await res.json();
+      } catch (e1) {
+        try {
+          const res2 = await fetch("data.json");
+          data = await res2.json();
+        } catch (e2) {
+          renderFatalError(e2);
+          return;
+        }
+      }
     }
 
+    state.selectedStrategyId = strategyId;
     state.data = normalizeData(data);
     state.barIntervalSec = inferBarInterval(state.data.candles);
 
+    const stratSelect = document.getElementById("strategySelect");
+    if (stratSelect && stratSelect.value !== strategyId) {
+      stratSelect.value = strategyId;
+    }
+
     renderHeader(state.data.backtest, state.data.candles);
-    populateDateFilter();
-    state.rrFilter = state.data.defaultRr || "1:2";
-    document.getElementById("rrFilter").value = state.rrFilter;
-    renderCards(calculateMetrics(filteredDashboardTrades()));
-    initChart(state.data.candles);
-    refreshDashboard();
+
+    if (state.chart && state.candleSeries) {
+      state.selectedTradeId = null;
+      renderDetailPanel(null);
+      refreshDashboard();
+    }
   }
 
   function renderFatalError(err) {
@@ -162,18 +191,49 @@ return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
   // Header
   // ---------------------------------------------------------------------
   function renderHeader(backtest, candles) {
-    document.getElementById("metaSymbol").textContent = backtest.symbol || "—";
-    document.getElementById("metaStrategy").textContent = backtest.strategy || "—";
-    document.getElementById("metaTimeframe").textContent = backtest.timeframe || "—";
-let from = backtest.startDate;
-let to = backtest.endDate;
+    setText("metaSymbol", backtest.symbol || "—");
+    setText("metaTimeframe", backtest.timeframe || "—");
+
+    const metaStrat = document.getElementById("metaStrategy");
+    if (metaStrat) metaStrat.textContent = backtest.strategy || "—";
+
+    let from = backtest.startDate;
+    let to = backtest.endDate;
     if (!from && candles.length) from = candles[0].time;
     if (!to && candles.length) to = candles[candles.length - 1].time;
 
-    document.getElementById("metaDateRange").textContent =
-      from && to ? `${formatDate(from)} – ${formatDate(to)}` : "—";
+    setText(
+      "metaDateRange",
+      from && to ? `${formatDate(from)} – ${formatDate(to)}` : "—"
+    );
 
-    document.title = `Backtester · ${backtest.symbol || "Strategy"}`;
+    const rawLastRun = backtest.lastRun || backtest.timestamp || backtest.runTimestamp;
+    const lastRunDiv = document.getElementById("lastRunDivider");
+    const lastRunField = document.getElementById("lastRunField");
+    const lastRunVal = document.getElementById("metaLastRun");
+
+    if (rawLastRun && lastRunVal && lastRunField) {
+      const d = new Date(rawLastRun);
+      if (!isNaN(d.getTime())) {
+        lastRunVal.textContent = d.toLocaleDateString(undefined, {
+          month: "short",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        lastRunField.hidden = false;
+        if (lastRunDiv) lastRunDiv.hidden = false;
+      } else {
+        lastRunVal.textContent = String(rawLastRun);
+        lastRunField.hidden = false;
+        if (lastRunDiv) lastRunDiv.hidden = false;
+      }
+    } else if (lastRunField) {
+      lastRunField.hidden = true;
+      if (lastRunDiv) lastRunDiv.hidden = true;
+    }
+
+    document.title = `Backtester · ${backtest.strategy || backtest.symbol || "Strategy"}`;
   }
 
   // ---------------------------------------------------------------------
@@ -292,24 +352,36 @@ let to = backtest.endDate;
 
   function activeScenario() {
     if (state.rrFilter === "ALL") {
-      return {
-        trades: Object.entries(state.data.rrScenarios).flatMap(([rr, scenario]) =>
-          scenario.trades.map((trade) => ({ ...trade, id: `${rr}-${trade.id}` }))
-        )
-      };
+      return state.data.rrScenarios[state.data.defaultRr || "1:2"] || state.data.rrScenarios["1:2"];
     }
-    return state.data.rrScenarios[state.rrFilter] || state.data.rrScenarios[state.data.defaultRr];
+    return state.data.rrScenarios[state.rrFilter] || state.data.rrScenarios[state.data.defaultRr || "1:2"] || state.data.rrScenarios["1:2"];
   }
 
   function filteredCandles() {
-    if (state.dateFilter === "ALL") return state.data.candles;
-    return state.data.candles.filter((c) => dateKey(c.time) === state.dateFilter);
+    if (!state.fromDate && !state.toDate) return state.data.candles;
+    return state.data.candles.filter((c) => {
+      const d = dateKey(c.time);
+      if (state.fromDate && d < state.fromDate) return false;
+      if (state.toDate && d > state.toDate) return false;
+      return true;
+    });
   }
 
   function filteredDashboardTrades() {
     return activeScenario().trades.filter((t) => {
       if (state.directionFilter !== "ALL" && t.direction !== state.directionFilter) return false;
-      if (state.dateFilter !== "ALL" && dateKey(t.date) !== state.dateFilter) return false;
+
+      if (t.entryTime) {
+        const entryIso = new Date(t.entryTime * 1000).toISOString();
+        const entryDate = entryIso.slice(0, 10);
+        const entryTime = entryIso.slice(11, 16);
+
+        if (state.fromDate && entryDate < state.fromDate) return false;
+        if (state.toDate && entryDate > state.toDate) return false;
+        if (state.entryFromTime && entryTime < state.entryFromTime) return false;
+        if (state.entryToTime && entryTime >= state.entryToTime) return false;
+      }
+
       return state.exitReasonFilter === "ALL" || normalizeExitReason(t.exitReason) === state.exitReasonFilter;
     });
   }
@@ -337,7 +409,7 @@ let to = backtest.endDate;
       const isSelected = t.id === state.selectedTradeId;
       const dim = state.selectedTradeId !== null && !isSelected;
 
-      addTradeMarkers(markers, t, dim);
+      addTradeMarkers(markers, t, dim, isSelected);
       addTradeLevelLines(t, dim, isSelected);
     });
 
@@ -404,53 +476,276 @@ let to = backtest.endDate;
   }
 
   function filterContextLabel() {
-    const date = state.dateFilter === "ALL" ? "ALL DATES" : formatDate(toUnixSeconds(state.dateFilter));
+    const dateLabel = (state.fromDate || state.toDate)
+      ? `${state.fromDate || "Start"} to ${state.toDate || "End"}`
+      : "ALL DATES";
+    const timeLabel = (state.entryFromTime || state.entryToTime)
+      ? ` [${state.entryFromTime || "00:00"}-${state.entryToTime || "23:59"}]`
+      : "";
     const exitReason = state.exitReasonFilter === "ALL" ? "ALL EXIT REASONS" : state.exitReasonFilter;
-    return `R:R ${state.rrFilter} — ${state.directionFilter} — ${date} — ${exitReason}`;
+    return `R:R ${state.rrFilter} — ${state.directionFilter} — ${dateLabel}${timeLabel} — ${exitReason}`;
   }
 
-  function activeAnalysisScope() {
-    const rr = state.rrFilter === "ALL" ? state.data.defaultRr : state.rrFilter;
-    return state.data.strategyAnalysis?.scopes?.[rr]?.[state.dateFilter] || null;
+  function get15mWindowLabel(unixSec) {
+    if (!unixSec) return "Unknown";
+    const d = new Date(unixSec * 1000);
+    const h = d.getUTCHours();
+    const m = d.getUTCMinutes();
+    const startMin = Math.floor(m / 15) * 15;
+    let endH = h;
+    let endMin = startMin + 15;
+    if (endMin >= 60) {
+      endH = (h + 1) % 24;
+      endMin = 0;
+    }
+    const formatHM = (hour, min) => `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    return `${formatHM(h, startMin)}–${formatHM(endH, endMin)}`;
   }
 
   function renderStrategyAnalysis() {
-    const analysis = state.data.strategyAnalysis;
-    const scope = activeAnalysisScope();
-    const rrLabel = state.rrFilter === "ALL" ? "ALL R:R (1:2 analysis)" : state.rrFilter;
-    const dateLabel = state.dateFilter === "ALL" ? "ALL DATES" : formatDate(toUnixSeconds(state.dateFilter));
-    setText("analysisScope", `R:R ${rrLabel} — ${state.directionFilter} — ${dateLabel}`);
+    const analysis = state.data?.strategyAnalysis;
+    const trades = filteredDashboardTrades();
+    const rrLabel = state.rrFilter === "ALL" ? "ALL R:R" : state.rrFilter;
+    const dateLabel = (state.fromDate || state.toDate)
+      ? `${state.fromDate || "Start"} to ${state.toDate || "End"}`
+      : "ALL DATES";
+    const timeLabel = (state.entryFromTime || state.entryToTime)
+      ? ` [${state.entryFromTime || "00:00"}-${state.entryToTime || "23:59"}]`
+      : "";
 
-    if (!analysis || !scope) return;
+    setText("analysisScope", `R:R ${rrLabel} — ${state.directionFilter} — ${dateLabel}${timeLabel}`);
 
-    const best = analysis.bestRr;
-    setText("analysisBestOverall", bestRrLabel(best.all));
-    setText("analysisBestLong", bestRrLabel(best.long));
-    setText("analysisBestShort", bestRrLabel(best.short));
+    if (analysis && analysis.bestRr) {
+      const best = analysis.bestRr;
+      setText("analysisBestOverall", bestRrLabel(best.all));
+      setText("analysisBestLong", bestRrLabel(best.long));
+      setText("analysisBestShort", bestRrLabel(best.short));
+    }
 
-    const selectedSummary = scope.directions[state.directionFilter].summary;
-    const edge = scope.directionEdge;
-    const edgeLabel = edge.strongerDirection === "EVEN" ? "LONG / SHORT evenly matched" : `${edge.strongerDirection} stronger edge`;
+    // 1. Dynamic Direction Edge
+    const longTrades = trades.filter((t) => t.direction === "LONG");
+    const shortTrades = trades.filter((t) => t.direction === "SHORT");
+    const longMetrics = calculateMetrics(longTrades);
+    const shortMetrics = calculateMetrics(shortTrades);
+
+    let longScore = 0;
+    let shortScore = 0;
+    if (longMetrics.netPnl > shortMetrics.netPnl) longScore++;
+    else if (shortMetrics.netPnl > longMetrics.netPnl) shortScore++;
+    if (longMetrics.profitFactor > shortMetrics.profitFactor) longScore++;
+    else if (shortMetrics.profitFactor > longMetrics.profitFactor) shortScore++;
+    if (longMetrics.winRate > shortMetrics.winRate) longScore++;
+    else if (shortMetrics.winRate > longMetrics.winRate) shortScore++;
+
+    const edgeLabel = longScore > shortScore
+      ? "LONG stronger edge"
+      : shortScore > longScore
+      ? "SHORT stronger edge"
+      : "LONG / SHORT evenly matched";
+
     setText("analysisDirectionEdge", edgeLabel);
     setText(
       "analysisDirectionMetrics",
-      `${state.directionFilter}: ${formatSigned(selectedSummary.netPnl)} · PF ${round2(selectedSummary.profitFactor)} · ${round1(selectedSummary.winRate)}% win | Long ${formatSigned(edge.long.netPnl)} / Short ${formatSigned(edge.short.netPnl)}`
+      `${state.directionFilter}: ${formatSigned(calculateMetrics(trades).netPnl)} | Long ${formatSigned(longMetrics.netPnl)} / Short ${formatSigned(shortMetrics.netPnl)}`
     );
 
-    const exits = scope.directions[state.directionFilter].exitDistribution[state.exitReasonFilter] ||
-      scope.directions[state.directionFilter].exitDistribution.ALL;
-    setText("analysisExitTarget", exitLabel(exits.target));
-    setText("analysisExitStopLoss", exitLabel(exits.stopLoss));
-    setText("analysisExitTime", exitLabel(exits.timeExit));
+    // 2. Streaks & Exit Distribution
+    let maxWinStreak = 0;
+    let maxLossStreak = 0;
+    let currWin = 0;
+    let currLoss = 0;
 
-    const consistency = scope.directions[state.directionFilter].dateConsistency;
-    setText("analysisConsistency", consistency.classification);
-    const bestDay = consistency.bestDay ? `${formatAnalysisDate(consistency.bestDay.date)} ${formatSigned(consistency.bestDay.netPoints)}` : "—";
-    const worstDay = consistency.worstDay ? `${formatAnalysisDate(consistency.worstDay.date)} ${formatSigned(consistency.worstDay.netPoints)}` : "—";
+    // Chronological order by entryTime
+    const sortedTrades = [...trades].sort((a, b) => (a.entryTime || 0) - (b.entryTime || 0));
+    sortedTrades.forEach((t) => {
+      const pnl = t.pnl || 0;
+      if (pnl > 0) {
+        currWin++;
+        currLoss = 0;
+        if (currWin > maxWinStreak) maxWinStreak = currWin;
+      } else if (pnl < 0) {
+        currLoss++;
+        currWin = 0;
+        if (currLoss > maxLossStreak) maxLossStreak = currLoss;
+      }
+    });
+
+    setText("analysisMaxWinStreak", `${maxWinStreak} ${maxWinStreak === 1 ? "win" : "wins"}`);
+    setText("analysisMaxLossStreak", `${maxLossStreak} ${maxLossStreak === 1 ? "loss" : "losses"}`);
+
+    const total = trades.length;
+    const countTarget = trades.filter((t) => normalizeExitReason(t.exitReason) === "TARGET").length;
+    const countSL = trades.filter((t) => normalizeExitReason(t.exitReason) === "STOP LOSS").length;
+    const countTime = trades.filter((t) => normalizeExitReason(t.exitReason) === "TIME EXIT").length;
+
+    const pct = (c) => total ? round1((c / total) * 100) : 0;
+    setText("analysisExitTarget", `${countTarget} · ${pct(countTarget)}%`);
+    setText("analysisExitStopLoss", `${countSL} · ${pct(countSL)}%`);
+    setText("analysisExitTime", `${countTime} · ${pct(countTime)}%`);
+
+    // 3. Dynamic Daily Performance
+    const dailyMap = {};
+    trades.forEach((t) => {
+      const dKey = dateKey(t.date || t.entryTime);
+      if (!dailyMap[dKey]) {
+        dailyMap[dKey] = { date: dKey, trades: 0, wins: 0, losses: 0, netPoints: 0 };
+      }
+      const d = dailyMap[dKey];
+      d.trades++;
+      const pnl = t.pnl || 0;
+      if (pnl > 0) d.wins++;
+      if (pnl < 0) d.losses++;
+      d.netPoints += pnl;
+    });
+
+    const dailyList = Object.values(dailyMap).sort((a, b) => a.date.localeCompare(b.date));
+    const dailyNets = dailyList.map((d) => d.netPoints);
+
+    const profDays = dailyList.filter((d) => d.netPoints > 0).length;
+    const lossDays = dailyList.filter((d) => d.netPoints < 0).length;
+    const profPct = dailyList.length ? (profDays / dailyList.length) * 100 : 0;
+    const avgDaily = dailyList.length ? dailyNets.reduce((a, b) => a + b, 0) / dailyList.length : 0;
+
+    let medianDaily = 0;
+    if (dailyNets.length > 0) {
+      const sortedNets = [...dailyNets].sort((a, b) => a - b);
+      const mid = Math.floor(sortedNets.length / 2);
+      medianDaily = sortedNets.length % 2 !== 0
+        ? sortedNets[mid]
+        : (sortedNets[mid - 1] + sortedNets[mid]) / 2;
+    }
+
+    let classification = "Inconsistent";
+    if (avgDaily > 0 && profPct >= 60) classification = "Consistent";
+    else if (avgDaily > 0 && profPct >= 50) classification = "Moderately consistent";
+    else if (avgDaily > 0) classification = "Concentrated";
+
+    let bestDayObj = null;
+    let worstDayObj = null;
+    dailyList.forEach((d) => {
+      if (!bestDayObj || d.netPoints > bestDayObj.netPoints) bestDayObj = d;
+      if (!worstDayObj || d.netPoints < worstDayObj.netPoints) worstDayObj = d;
+    });
+
+    setText("analysisConsistency", classification);
+    setText("analysisBestDay", bestDayObj ? `${formatAnalysisDate(bestDayObj.date)} (${formatSigned(bestDayObj.netPoints)} pts)` : "—");
+    setText("analysisWorstDay", worstDayObj ? `${formatAnalysisDate(worstDayObj.date)} (${formatSigned(worstDayObj.netPoints)} pts)` : "—");
+    setText("analysisDayCounts", `${profDays} prof / ${lossDays} loss (${dailyList.length} total)`);
+    setText("analysisAvgDailyNet", formatSigned(avgDaily));
+    setText("analysisMedianDailyNet", formatSigned(medianDaily));
+
+    // Render Compact Daily Performance Table
+    const dailyTbody = document.getElementById("dailyTableBody");
+    if (dailyTbody) {
+      dailyTbody.innerHTML = "";
+      if (!dailyList.length) {
+        dailyTbody.innerHTML = `<tr><td colspan="5" class="empty-row">No daily performance data</td></tr>`;
+      } else {
+        const frag = document.createDocumentFragment();
+        [...dailyList].reverse().forEach((d) => {
+          const tr = document.createElement("tr");
+          const pnlClass = d.netPoints > 0 ? "positive" : (d.netPoints < 0 ? "negative" : "");
+          tr.innerHTML = `
+            <td>${formatAnalysisDate(d.date)}</td>
+            <td>${d.trades}</td>
+            <td class="win-num">${d.wins}</td>
+            <td class="loss-num">${d.losses}</td>
+            <td class="col-pnl pnl-cell ${pnlClass}">${formatSigned(d.netPoints)}</td>
+          `;
+          frag.appendChild(tr);
+        });
+        dailyTbody.appendChild(frag);
+      }
+    }
+
+    // 4. Dynamic Entry Time Analysis (15m Buckets)
+    const timeBucketMap = {};
+    trades.forEach((t) => {
+      const windowLabel = get15mWindowLabel(t.entryTime);
+      if (!timeBucketMap[windowLabel]) {
+        timeBucketMap[windowLabel] = {
+          window: windowLabel,
+          trades: 0,
+          wins: 0,
+          losses: 0,
+          netPoints: 0,
+          grossProfit: 0,
+          grossLoss: 0,
+        };
+      }
+      const b = timeBucketMap[windowLabel];
+      b.trades++;
+      const pnl = t.pnl || 0;
+      if (pnl > 0) {
+        b.wins++;
+        b.grossProfit += pnl;
+      } else if (pnl < 0) {
+        b.losses++;
+        b.grossLoss += Math.abs(pnl);
+      }
+      b.netPoints += pnl;
+    });
+
+    const bucketList = Object.values(timeBucketMap)
+      .filter((b) => {
+        const startHM = b.window.slice(0, 5);
+        if (state.entryFromTime && startHM < state.entryFromTime) return false;
+        if (state.entryToTime && startHM >= state.entryToTime) return false;
+        return true;
+      })
+      .sort((a, b) => a.window.localeCompare(b.window));
+    bucketList.forEach((b) => {
+      b.winRate = b.trades ? (b.wins / b.trades) * 100 : 0;
+      b.avgTrade = b.trades ? b.netPoints / b.trades : 0;
+      b.profitFactor = b.grossLoss > 0 ? b.grossProfit / b.grossLoss : (b.grossProfit > 0 ? Infinity : 0);
+    });
+
+    let bestWindowObj = null;
+    let worstWindowObj = null;
+    bucketList.forEach((b) => {
+      if (!bestWindowObj || b.netPoints > bestWindowObj.netPoints) bestWindowObj = b;
+      if (!worstWindowObj || b.netPoints < worstWindowObj.netPoints) worstWindowObj = b;
+    });
+
     setText(
-      "analysisConsistencyMetrics",
-      `${round1(consistency.profitableDayPercentage)}% profitable days · Avg ${formatSigned(consistency.averageDailyNet)} | Best ${bestDay} | Worst ${worstDay}`
+      "analysisBestWindow",
+      bestWindowObj
+        ? `${bestWindowObj.window} (${formatSigned(bestWindowObj.netPoints)} pts, ${bestWindowObj.trades} ${bestWindowObj.trades === 1 ? "trade" : "trades"})`
+        : "—"
     );
+
+    setText(
+      "analysisWorstWindow",
+      worstWindowObj
+        ? `${worstWindowObj.window} (${formatSigned(worstWindowObj.netPoints)} pts, ${worstWindowObj.trades} ${worstWindowObj.trades === 1 ? "trade" : "trades"})`
+        : "—"
+    );
+
+    // Render Compact Entry Time Breakdown Table
+    const timeTbody = document.getElementById("timeTableBody");
+    if (timeTbody) {
+      timeTbody.innerHTML = "";
+      if (!bucketList.length) {
+        timeTbody.innerHTML = `<tr><td colspan="6" class="empty-row">No entry time data</td></tr>`;
+      } else {
+        const frag = document.createDocumentFragment();
+        bucketList.forEach((b) => {
+          const tr = document.createElement("tr");
+          const pnlClass = b.netPoints > 0 ? "positive" : (b.netPoints < 0 ? "negative" : "");
+          const pfStr = isFinite(b.profitFactor) ? round2(b.profitFactor) : (b.grossProfit > 0 ? "∞" : "0");
+          tr.innerHTML = `
+            <td>${b.window}</td>
+            <td>${b.trades}</td>
+            <td>${round1(b.winRate)}%</td>
+            <td>${formatSigned(b.avgTrade)}</td>
+            <td>${pfStr}</td>
+            <td class="col-pnl pnl-cell ${pnlClass}">${formatSigned(b.netPoints)}</td>
+          `;
+          frag.appendChild(tr);
+        });
+        timeTbody.appendChild(frag);
+      }
+    }
   }
 
   function bestRrLabel(summary) {
@@ -482,7 +777,7 @@ let to = backtest.endDate;
     });
   }
 
-  function addTradeMarkers(markers, t, dim) {
+  function addTradeMarkers(markers, t, dim, isSelected) {
     const isLong = t.direction === "LONG";
     const dirColor = isLong ? COLOR.teal : COLOR.red;
     const entryColor = dim ? (isLong ? COLOR.tealDim : COLOR.redDim) : dirColor;
@@ -492,8 +787,8 @@ let to = backtest.endDate;
       position: isLong ? "belowBar" : "aboveBar",
       color: entryColor,
       shape: isLong ? "arrowUp" : "arrowDown",
-      text: dim ? "" : `${t.direction} ${formatNumber(t.entryPrice)}`,
-      size: dim ? 0.9 : 1.3,
+      text: isSelected ? `${t.direction} ${formatNumber(t.entryPrice)}` : "",
+      size: isSelected ? 1.5 : (dim ? 0.8 : 1.1),
     });
 
     if (t.exitTime !== undefined && t.exitTime !== null) {
@@ -511,8 +806,8 @@ let to = backtest.endDate;
         position: isLong ? "aboveBar" : "belowBar",
         color: exitColor,
         shape: "circle",
-        text: dim ? "" : `EXIT ${formatNumber(t.exitPrice)}${t.exitReason ? " · " + prettyReason(t.exitReason) : ""}`,
-        size: dim ? 0.9 : 1.1,
+        text: isSelected ? `EXIT ${formatNumber(t.exitPrice)}${t.exitReason ? " · " + prettyReason(t.exitReason) : ""}` : "",
+        size: isSelected ? 1.3 : (dim ? 0.7 : 0.9),
       });
     }
   }
@@ -694,10 +989,65 @@ let to = backtest.endDate;
       });
     });
 
-    document.getElementById("dateFilter").addEventListener("change", (e) => {
-      state.dateFilter = e.target.value;
+    const handleFilterInput = () => {
+      state.fromDate = document.getElementById("fromDateFilter")?.value || "";
+      state.toDate = document.getElementById("toDateFilter")?.value || "";
+      state.entryFromTime = document.getElementById("entryFromTimeFilter")?.value || "";
+      state.entryToTime = document.getElementById("entryToTimeFilter")?.value || "";
       refreshDashboard();
+    };
+
+    ["fromDateFilter", "toDateFilter", "entryFromTimeFilter", "entryToTimeFilter"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener("change", handleFilterInput);
+        el.addEventListener("input", handleFilterInput);
+      }
     });
+
+    const resetBtn = document.getElementById("btnResetFilters");
+    if (resetBtn) {
+      resetBtn.addEventListener("click", () => {
+        state.fromDate = "";
+        state.toDate = "";
+        state.entryFromTime = "";
+        state.entryToTime = "";
+        state.directionFilter = "ALL";
+        state.rrFilter = state.data?.defaultRr || "1:2";
+        state.exitReasonFilter = "ALL";
+        state.searchTerm = "";
+
+        const fDate = document.getElementById("fromDateFilter"); if (fDate) fDate.value = "";
+        const tDate = document.getElementById("toDateFilter"); if (tDate) tDate.value = "";
+        const fTime = document.getElementById("entryFromTimeFilter"); if (fTime) fTime.value = "";
+        const tTime = document.getElementById("entryToTimeFilter"); if (tTime) tTime.value = "";
+        const rrSel = document.getElementById("rrFilter"); if (rrSel) rrSel.value = state.rrFilter;
+        const exitSel = document.getElementById("exitReasonFilter"); if (exitSel) exitSel.value = "ALL";
+        const searchInp = document.getElementById("tradeSearch"); if (searchInp) searchInp.value = "";
+
+        document.querySelectorAll("#directionFilter .segmented-btn").forEach((b) => {
+          b.classList.toggle("active", b.dataset.filter === "ALL");
+        });
+
+        refreshDashboard();
+      });
+    }
+
+    const legacyDateFilter = document.getElementById("dateFilter");
+    if (legacyDateFilter) {
+      legacyDateFilter.addEventListener("change", (e) => {
+        state.fromDate = e.target.value === "ALL" ? "" : e.target.value;
+        state.toDate = e.target.value === "ALL" ? "" : e.target.value;
+        refreshDashboard();
+      });
+    }
+
+    const stratSelect = document.getElementById("strategySelect");
+    if (stratSelect) {
+      stratSelect.addEventListener("change", (e) => {
+        loadStrategy(e.target.value);
+      });
+    }
 
     document.getElementById("rrFilter").addEventListener("change", (e) => {
       state.rrFilter = e.target.value;
